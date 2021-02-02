@@ -22,7 +22,7 @@
 Name: kernel
 License: GPLv2
 Version: 4.19.19
-Release: 7.0.9.1%{?dist}
+Release: 7.0.9.1.0.noxsa332.1%{?dist}
 ExclusiveArch: x86_64
 ExclusiveOS: Linux
 Summary: The Linux kernel
@@ -395,7 +395,7 @@ Patch337: xsa332-linux-07.patch
 Patch338: xsa332-linux-08.patch
 Patch339: xsa332-linux-09.patch
 Patch340: xsa332-linux-10.patch
-Patch341: xsa332-linux-11.patch
+#Patch341: xsa332-linux-11.patch
 Patch342: 0001-Add-shadow-variables-support-from-kpatch.patch
 Patch343: 0002-xen-xenbus-Allow-watches-discard-events-before-queue.patch
 Patch344: 0003-xen-xenbus-Add-will_handle-callback-support-in-xenbu.patch
@@ -712,6 +712,11 @@ fi
 %{?_cov_results_package}
 
 %changelog
+* Tue Feb 02 2021 Samuel Verschelde <stormi-xcp@ylix.fr> - 4.19.19-7.0.9.1.0.noxsa332.1
+- Disable XSA-332 patch 12
+- Work around https://github.com/xcp-ng/xcp/issues/453
+- Use at your own risk
+
 * Wed Dec 16 2020 Samuel Verschelde <stormi-xcp@ylix.fr> - 4.19.19-7.0.9.1
 - Security update (XSAs 349 and 350)
 - Sync to 4.19.19-7.0.9
