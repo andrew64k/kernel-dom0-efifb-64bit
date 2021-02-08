@@ -1,0 +1,44 @@
+From: Juergen Gross <jgross@suse.com>
+To: xen-devel@lists.xenproject.org, linux-kernel@vger.kernel.org
+Cc: Juergen Gross <jgross@suse.com>,
+	Boris Ostrovsky <boris.ostrovsky@oracle.com>,
+	Stefano Stabellini <sstabellini@kernel.org>,
+	stable@vger.kernel.org
+Subject: [PATCH 3/7] xen/events: fix lateeoi irq acknowledgment
+Date: Sat,  6 Feb 2021 11:49:28 +0100
+Message-ID: <20210206104932.29064-4-jgross@suse.com> (raw)
+In-Reply-To: <20210206104932.29064-1-jgross@suse.com>
+
+When having accepted an irq as result from receiving an event the
+related event should be cleared. The lateeoi model is missing that,
+resulting in a continuous stream of events being signalled.
+
+Fixes: 54c9de89895e0a ("xen/events: add a new late EOI evtchn framework")
+Cc: stable@vger.kernel.org
+Signed-off-by: Juergen Gross <jgross@suse.com>
+---
+ drivers/xen/events/events_base.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/drivers/xen/events/events_base.c b/drivers/xen/events/events_base.c
+index 6a836d131e73..7b26ef817f8b 100644
+--- a/drivers/xen/events/events_base.c
++++ b/drivers/xen/events/events_base.c
+@@ -1826,6 +1826,7 @@ static void lateeoi_ack_dynirq(struct irq_data *data)
+ 	if (VALID_EVTCHN(evtchn)) {
+ 		info->eoi_pending = true;
+ 		mask_evtchn(evtchn);
++		clear_evtchn(evtchn);
+ 	}
+ }
+ 
+@@ -1838,6 +1839,7 @@ static void lateeoi_mask_ack_dynirq(struct irq_data *data)
+ 		info->masked = true;
+ 		info->eoi_pending = true;
+ 		mask_evtchn(evtchn);
++		clear_evtchn(evtchn);
+ 	}
+ }
+ 
+-- 
+2.26.2

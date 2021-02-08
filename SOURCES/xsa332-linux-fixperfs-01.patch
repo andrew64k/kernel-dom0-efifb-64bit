@@ -1,0 +1,80 @@
+XCP-ng note: patch backported, context of first hunk adapted.
+
+From: Juergen Gross <jgross@suse.com>
+To: xen-devel@lists.xenproject.org, linux-kernel@vger.kernel.org
+Cc: Juergen Gross <jgross@suse.com>,
+	Boris Ostrovsky <boris.ostrovsky@oracle.com>,
+	Stefano Stabellini <sstabellini@kernel.org>,
+	stable@vger.kernel.org, Julien Grall <julien@xen.org>
+Subject: [PATCH 1/7] xen/events: reset affinity of 2-level event initially
+Date: Sat,  6 Feb 2021 11:49:26 +0100
+Message-ID: <20210206104932.29064-2-jgross@suse.com> (raw)
+In-Reply-To: <20210206104932.29064-1-jgross@suse.com>
+
+When creating a new event channel with 2-level events the affinity
+needs to be reset initially in order to avoid using an old affinity
+from earlier usage of the event channel port.
+
+The same applies to the affinity when onlining a vcpu: all old
+affinity settings for this vcpu must be reset. As percpu events get
+initialized before the percpu event channel hook is called,
+resetting of the affinities happens after offlining a vcpu (this is
+working, as initial percpu memory is zeroed out).
+
+Cc: stable@vger.kernel.org
+Reported-by: Julien Grall <julien@xen.org>
+Signed-off-by: Juergen Gross <jgross@suse.com>
+---
+ drivers/xen/events/events_2l.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/drivers/xen/events/events_2l.c b/drivers/xen/events/events_2l.c
+index da87f3a1e351..23217940144a 100644
+--- a/drivers/xen/events/events_2l.c
++++ b/drivers/xen/events/events_2l.c
+@@ -47,6 +47,16 @@ static unsigned evtchn_2l_max_channels(void)
+ 	return EVTCHN_2L_NR_CHANNELS;
+ }
+ 
++static int evtchn_2l_setup(evtchn_port_t evtchn)
++{
++	unsigned int cpu;
++
++	for_each_online_cpu(cpu)
++		clear_bit(evtchn, BM(per_cpu(cpu_evtchn_mask, cpu)));
++
++	return 0;
++}
++
+ static void evtchn_2l_bind_to_cpu(struct irq_info *info, unsigned cpu)
+ {
+	clear_bit(info->evtchn, BM(per_cpu(cpu_evtchn_mask, info->cpu)));
+@@ -355,9 +365,18 @@ static void evtchn_2l_resume(void)
+ 				EVTCHN_2L_NR_CHANNELS/BITS_PER_EVTCHN_WORD);
+ }
+ 
++static int evtchn_2l_percpu_deinit(unsigned int cpu)
++{
++	memset(per_cpu(cpu_evtchn_mask, cpu), 0, sizeof(xen_ulong_t) *
++			EVTCHN_2L_NR_CHANNELS/BITS_PER_EVTCHN_WORD);
++
++	return 0;
++}
++
+ static const struct evtchn_ops evtchn_ops_2l = {
+ 	.max_channels      = evtchn_2l_max_channels,
+ 	.nr_channels       = evtchn_2l_max_channels,
++	.setup             = evtchn_2l_setup,
+ 	.bind_to_cpu       = evtchn_2l_bind_to_cpu,
+ 	.clear_pending     = evtchn_2l_clear_pending,
+ 	.set_pending       = evtchn_2l_set_pending,
+@@ -367,6 +386,7 @@ static const struct evtchn_ops evtchn_ops_2l = {
+ 	.unmask            = evtchn_2l_unmask,
+ 	.handle_events     = evtchn_2l_handle_events,
+ 	.resume	           = evtchn_2l_resume,
++	.percpu_deinit     = evtchn_2l_percpu_deinit,
+ };
+ 
+ void __init xen_evtchn_2l_init(void)
+-- 
+2.26.2
