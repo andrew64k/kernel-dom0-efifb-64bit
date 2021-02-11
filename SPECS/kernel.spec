@@ -22,7 +22,7 @@
 Name: kernel
 License: GPLv2
 Version: 4.19.19
-Release: 7.0.9.1.0.fixperfs.1%{?dist}
+Release: 7.0.9.1.0.fixperfs.2%{?dist}
 ExclusiveArch: x86_64
 ExclusiveOS: Linux
 Summary: The Linux kernel
@@ -409,6 +409,8 @@ Patch349: abi-version.patch
 Patch1000: xsa332-linux-fixperfs-01.patch
 Patch1001: xsa332-linux-fixperfs-02.patch
 Patch1002: xsa332-linux-fixperfs-03.patch
+Patch1003: xsa332-linux-fixperfs-04.patch
+Patch1004: xsa332-linux-fixperfs-05.patch
 
 Provides: gitsha(https://code.citrite.net/rest/archive/latest/projects/XSU/repos/linux-stable/archive?at=refs%2Ftags%2Fv4.19.19&format=tar.gz&prefix=kernel-4.19.19#/kernel-4.19.19.tar.gz) = dffbba4348e9686d6bf42d54eb0f2cd1c4fb3520
 Provides: gitsha(ssh://git@code.citrite.net/xs/linux.pg.git) = 1955079215ac3bd9d923958731d3f561500a8966

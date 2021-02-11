@@ -1,0 +1,418 @@
+XCP-ng notes: various hunks modified, removed, added
+
+From: Juergen Gross <jgross@suse.com>
+To: xen-devel@lists.xenproject.org, linux-block@vger.kernel.org,
+	linux-kernel@vger.kernel.org, netdev@vger.kernel.org,
+	linux-scsi@vger.kernel.org
+Cc: "Juergen Gross" <jgross@suse.com>,
+	"Konrad Rzeszutek Wilk" <konrad.wilk@oracle.com>,
+	"Roger Pau Monné" <roger.pau@citrix.com>,
+	"Jens Axboe" <axboe@kernel.dk>, "Wei Liu" <wei.liu@kernel.org>,
+	"Paul Durrant" <paul@xen.org>,
+	"David S. Miller" <davem@davemloft.net>,
+	"Jakub Kicinski" <kuba@kernel.org>,
+	"Boris Ostrovsky" <boris.ostrovsky@oracle.com>,
+	"Stefano Stabellini" <sstabellini@kernel.org>
+Subject: [PATCH 4/7] xen/events: link interdomain events to associated xenbus device
+Date: Sat,  6 Feb 2021 11:49:29 +0100
+Message-ID: <20210206104932.29064-5-jgross@suse.com> (raw)
+In-Reply-To: <20210206104932.29064-1-jgross@suse.com>
+
+In order to support the possibility of per-device event channel
+settings (e.g. lateeoi spurious event thresholds) add a xenbus device
+pointer to struct irq_info() and modify the related event channel
+binding interfaces to take the pointer to the xenbus device as a
+parameter instead of the domain id of the other side.
+
+While at it remove the stale prototype of bind_evtchn_to_irq_lateeoi().
+
+Signed-off-by: Juergen Gross <jgross@suse.com>
+---
+ drivers/block/xen-blkback/xenbus.c  |  2 +-
+ drivers/net/xen-netback/interface.c | 16 +++++------
+ drivers/xen/events/events_base.c    | 41 +++++++++++++++++------------
+ drivers/xen/pvcalls-back.c          |  4 +--
+ drivers/xen/xen-pciback/xenbus.c    |  2 +-
+ drivers/xen/xen-scsiback.c          |  2 +-
+ include/xen/events.h                |  7 ++---
+ 7 files changed, 41 insertions(+), 33 deletions(-)
+
+diff --git a/drivers/block/xen-blkback/xenbus.c b/drivers/block/xen-blkback/xenbus.c
+index 9860d4842f36..c2aaf690352c 100644
+--- a/drivers/block/xen-blkback/xenbus.c
++++ b/drivers/block/xen-blkback/xenbus.c
+@@ -245,7 +245,7 @@ static int xen_blkif_map(struct xen_blkif_ring *ring, grant_ref_t *gref,
+ 	if (req_prod - rsp_prod > size)
+ 		goto fail;
+ 
+-	err = bind_interdomain_evtchn_to_irqhandler_lateeoi(blkif->domid,
++	err = bind_interdomain_evtchn_to_irqhandler_lateeoi(blkif->be->dev,
+ 			evtchn, xen_blkif_be_int, 0, "blkif-backend", ring);
+ 	if (err < 0)
+ 		goto fail;
+diff --git a/drivers/net/xen-netback/interface.c b/drivers/net/xen-netback/interface.c
+index acb786d8b1d8..494b4330a4ea 100644
+--- a/drivers/net/xen-netback/interface.c
++++ b/drivers/net/xen-netback/interface.c
+@@ -628,12 +628,12 @@ int xenvif_connect_ctrl(struct xenvif *vif, grant_ref_t ring_ref,
+ 			unsigned int evtchn)
+ {
+ 	struct net_device *dev = vif->dev;
++	struct xenbus_device *xendev = xenvif_to_xenbus_device(vif);
+ 	void *addr;
+ 	struct xen_netif_ctrl_sring *shared;
+ 	int err;
+ 
+-	err = xenbus_map_ring_valloc(xenvif_to_xenbus_device(vif),
+-				     &ring_ref, 1, &addr);
++	err = xenbus_map_ring_valloc(xendev, &ring_ref, 1, &addr);
+ 	if (err)
+ 		goto err;
+ 
+@@ -648,7 +648,7 @@ int xenvif_connect_ctrl(struct xenvif *vif, grant_ref_t ring_ref,
+ 	if (req_prod - rsp_prod > RING_SIZE(&vif->ctrl))
+ 		goto err_unmap;
+ 
+-	err = bind_interdomain_evtchn_to_irq_lateeoi(vif->domid, evtchn);
++	err = bind_interdomain_evtchn_to_irq_lateeoi(xendev, evtchn);
+ 	if (err < 0)
+ 		goto err_unmap;
+ 
+@@ -671,8 +671,7 @@ int xenvif_connect_ctrl(struct xenvif *vif, grant_ref_t ring_ref,
+ 	vif->ctrl_irq = 0;
+ 
+ err_unmap:
+-	xenbus_unmap_ring_vfree(xenvif_to_xenbus_device(vif),
+-				vif->ctrl.sring);
++	xenbus_unmap_ring_vfree(xendev, vif->ctrl.sring);
+ 	vif->ctrl.sring = NULL;
+ 
+ err:
+@@ -717,6 +716,7 @@ int xenvif_connect_data(struct xenvif_queue *queue,
+ 			unsigned int tx_evtchn,
+ 			unsigned int rx_evtchn)
+ {
++	struct xenbus_device *dev = xenvif_to_xenbus_device(queue->vif);
+ 	struct task_struct *task;
+ 	int err;
+ 
+@@ -753,7 +753,7 @@ int xenvif_connect_data(struct xenvif_queue *queue,
+ 	if (tx_evtchn == rx_evtchn) {
+ 		/* feature-split-event-channels == 0 */
+ 		err = bind_interdomain_evtchn_to_irqhandler_lateeoi(
+-			queue->vif->domid, tx_evtchn, xenvif_interrupt, 0,
++			dev, tx_evtchn, xenvif_interrupt, 0,
+ 			queue->name, queue);
+ 		if (err < 0)
+ 			goto err;
+@@ -764,7 +764,7 @@ int xenvif_connect_data(struct xenvif_queue *queue,
+ 		snprintf(queue->tx_irq_name, sizeof(queue->tx_irq_name),
+ 			 "%s-tx", queue->name);
+ 		err = bind_interdomain_evtchn_to_irqhandler_lateeoi(
+-			queue->vif->domid, tx_evtchn, xenvif_tx_interrupt, 0,
++			dev, tx_evtchn, xenvif_tx_interrupt, 0,
+ 			queue->tx_irq_name, queue);
+ 		if (err < 0)
+ 			goto err;
+@@ -774,7 +774,7 @@ int xenvif_connect_data(struct xenvif_queue *queue,
+ 		snprintf(queue->rx_irq_name, sizeof(queue->rx_irq_name),
+ 			 "%s-rx", queue->name);
+ 		err = bind_interdomain_evtchn_to_irqhandler_lateeoi(
+-			queue->vif->domid, rx_evtchn, xenvif_rx_interrupt, 0,
++			dev, rx_evtchn, xenvif_rx_interrupt, 0,
+ 			queue->rx_irq_name, queue);
+ 		if (err < 0)
+ 			goto err;
+Index: drivers/xen/events/events_internal.h
+===================================================================
+--- a/drivers/xen/events/events_internal.h
++++ b/drivers/xen/events/events_internal.h	2021-02-09 13:24:49.178822763 +0100
+@@ -55,6 +55,7 @@
+ 			unsigned char flags;
+ 			uint16_t domid;
+ 		} pirq;
++		struct xenbus_device *interdomain;
+ 	} u;
+ };
+ 
+diff --git a/drivers/xen/events/events_base.c b/drivers/xen/events/events_base.c
+index 7b26ef817f8b..8c620c11e32a 100644
+--- a/drivers/xen/events/events_base.c
++++ b/drivers/xen/events/events_base.c
+@@ -63,6 +63,7 @@
+ #include <xen/interface/physdev.h>
+ #include <xen/interface/sched.h>
+ #include <xen/interface/vcpu.h>
++#include <xen/xenbus.h>
+ #include <asm/hw_irq.h>
+ 
+ #include "events_internal.h"
+@@ -317,11 +319,16 @@ static int xen_irq_info_common_setup(struct irq_info *info,
+ }
+ 
+ static int xen_irq_info_evtchn_setup(unsigned irq,
+-				     unsigned evtchn)
++				     evtchn_port_t evtchn,
++				     struct xenbus_device *dev)
+ {
+ 	struct irq_info *info = info_for_irq(irq);
++	int ret;
+ 
+-	return xen_irq_info_common_setup(info, irq, IRQT_EVTCHN, evtchn, 0);
++	ret = xen_irq_info_common_setup(info, irq, IRQT_EVTCHN, evtchn, 0);
++	info->u.interdomain = dev;
++
++	return ret;
+ }
+ 
+ static int xen_irq_info_ipi_setup(unsigned cpu,
+@@ -1128,7 +1135,8 @@ int xen_pirq_from_irq(unsigned irq)
+ }
+ EXPORT_SYMBOL_GPL(xen_pirq_from_irq);
+ 
+-static int bind_evtchn_to_irq_chip(evtchn_port_t evtchn, struct irq_chip *chip)
++static int bind_evtchn_to_irq_chip(evtchn_port_t evtchn, struct irq_chip *chip,
++				   struct xenbus_device *dev)
+ {
+ 	int irq;
+ 	int ret;
+@@ -1148,7 +1156,7 @@ static int bind_evtchn_to_irq_chip(evtchn_port_t evtchn, struct irq_chip *chip)
+ 		irq_set_chip_and_handler_name(irq, chip,
+ 					      handle_edge_irq, "event");
+ 
+-		ret = xen_irq_info_evtchn_setup(irq, evtchn);
++		ret = xen_irq_info_evtchn_setup(irq, evtchn, dev);
+ 		if (ret < 0) {
+ 			__unbind_from_irq(irq);
+ 			irq = ret;
+@@ -1175,7 +1183,7 @@ static int bind_evtchn_to_irq_chip(evtchn_port_t evtchn, struct irq_chip *chip)
+ 
+ int bind_evtchn_to_irq(evtchn_port_t evtchn)
+ {
+-	return bind_evtchn_to_irq_chip(evtchn, &xen_dynamic_chip);
++	return bind_evtchn_to_irq_chip(evtchn, &xen_dynamic_chip, NULL);
+ }
+ EXPORT_SYMBOL_GPL(bind_evtchn_to_irq);
+ 
+@@ -1130,35 +1130,35 @@
+ 	return irq;
+ }
+ 
+-static int bind_interdomain_evtchn_to_irq_chip(unsigned int remote_domain,
++static int bind_interdomain_evtchn_to_irq_chip(struct xenbus_device *dev,
+ 					       evtchn_port_t remote_port,
+ 					       struct irq_chip *chip)
+ {
+ 	struct evtchn_bind_interdomain bind_interdomain;
+ 	int err;
+ 
+-	bind_interdomain.remote_dom  = remote_domain;
++	bind_interdomain.remote_dom  = dev->otherend_id;
+ 	bind_interdomain.remote_port = remote_port;
+ 
+ 	err = HYPERVISOR_event_channel_op(EVTCHNOP_bind_interdomain,
+ 					  &bind_interdomain);
+ 
+ 	return err ? : bind_evtchn_to_irq_chip(bind_interdomain.local_port,
+-					       chip);
++					       chip, dev);
+ }
+ 
+-int bind_interdomain_evtchn_to_irq(unsigned int remote_domain,
++int bind_interdomain_evtchn_to_irq(struct xenbus_device *dev,
+ 				   unsigned int remote_port)
+ {
+-	return bind_interdomain_evtchn_to_irq_chip(remote_domain, remote_port,
++	return bind_interdomain_evtchn_to_irq_chip(dev, remote_port,
+ 						   &xen_dynamic_chip);
+ }
+ EXPORT_SYMBOL_GPL(bind_interdomain_evtchn_to_irq);
+ 
+-int bind_interdomain_evtchn_to_irq_lateeoi(unsigned int remote_domain,
++int bind_interdomain_evtchn_to_irq_lateeoi(struct xenbus_device *dev,
+ 					   evtchn_port_t remote_port)
+ {
+-	return bind_interdomain_evtchn_to_irq_chip(remote_domain, remote_port,
++	return bind_interdomain_evtchn_to_irq_chip(dev, remote_port,
+ 						   &xen_lateeoi_chip);
+ }
+ EXPORT_SYMBOL_GPL(bind_interdomain_evtchn_to_irq_lateeoi);
+@@ -1357,7 +1365,7 @@ static int bind_evtchn_to_irqhandler_chip(evtchn_port_t evtchn,
+ {
+ 	int irq, retval;
+ 
+-	irq = bind_evtchn_to_irq_chip(evtchn, chip);
++	irq = bind_evtchn_to_irq_chip(evtchn, chip, NULL);
+ 	if (irq < 0)
+ 		return irq;
+ 	retval = request_irq(irq, handler, irqflags, devname, dev_id);
+@@ -1392,14 +1400,13 @@ int bind_evtchn_to_irqhandler_lateeoi(evtchn_port_t evtchn,
+ EXPORT_SYMBOL_GPL(bind_evtchn_to_irqhandler_lateeoi);
+ 
+ static int bind_interdomain_evtchn_to_irqhandler_chip(
+-		unsigned int remote_domain, evtchn_port_t remote_port,
++		struct xenbus_device *dev, evtchn_port_t remote_port,
+ 		irq_handler_t handler, unsigned long irqflags,
+ 		const char *devname, void *dev_id, struct irq_chip *chip)
+ {
+ 	int irq, retval;
+ 
+-	irq = bind_interdomain_evtchn_to_irq_chip(remote_domain, remote_port,
+-						  chip);
++	irq = bind_interdomain_evtchn_to_irq_chip(dev, remote_port, chip);
+ 	if (irq < 0)
+ 		return irq;
+ 
+@@ -1412,14 +1419,14 @@ static int bind_interdomain_evtchn_to_irqhandler_chip(
+ 	return irq;
+ }
+ 
+-int bind_interdomain_evtchn_to_irqhandler_lateeoi(unsigned int remote_domain,
++int bind_interdomain_evtchn_to_irqhandler_lateeoi(struct xenbus_device *dev,
+ 						  evtchn_port_t remote_port,
+ 						  irq_handler_t handler,
+ 						  unsigned long irqflags,
+ 						  const char *devname,
+ 						  void *dev_id)
+ {
+-	return bind_interdomain_evtchn_to_irqhandler_chip(remote_domain,
++	return bind_interdomain_evtchn_to_irqhandler_chip(dev,
+ 				remote_port, handler, irqflags, devname,
+ 				dev_id, &xen_lateeoi_chip);
+ }
+@@ -1691,7 +1698,7 @@ void rebind_evtchn_irq(evtchn_port_t evtchn, int irq)
+ 	   so there should be a proper type */
+ 	BUG_ON(info->type == IRQT_UNBOUND);
+ 
+-	(void)xen_irq_info_evtchn_setup(irq, evtchn);
++	(void)xen_irq_info_evtchn_setup(irq, evtchn, NULL);
+ 
+ 	mutex_unlock(&irq_mapping_update_lock);
+ 
+Index: drivers/xen/events/events_base.c
+===================================================================
+--- a/drivers/xen/events/events_base.c
++++ b/drivers/xen/events/events_base.c	2021-02-09 16:05:55.815648769 +0100
+@@ -1320,14 +1320,14 @@
+ 	return irq;
+ }
+ 
+-int bind_interdomain_evtchn_to_irqhandler(unsigned int remote_domain,
++int bind_interdomain_evtchn_to_irqhandler(struct xenbus_device *dev,
+ 					  unsigned int remote_port,
+ 					  irq_handler_t handler,
+ 					  unsigned long irqflags,
+ 					  const char *devname,
+ 					  void *dev_id)
+ {
+-	return bind_interdomain_evtchn_to_irqhandler_chip(remote_domain,
++	return bind_interdomain_evtchn_to_irqhandler_chip(dev,
+ 				remote_port, handler, irqflags, devname,
+ 				dev_id, &xen_dynamic_chip);
+ }
+Index: drivers/xen/events/events_base.c
+===================================================================
+--- a/drivers/xen/events/events_base.c
++++ b/drivers/xen/events/events_base.c	2021-02-09 16:44:31.739846663 +0100
+@@ -1083,12 +1083,6 @@
+ }
+ EXPORT_SYMBOL_GPL(bind_evtchn_to_irq);
+ 
+-int bind_evtchn_to_irq_lateeoi(evtchn_port_t evtchn)
+-{
+-	return bind_evtchn_to_irq_chip(evtchn, &xen_lateeoi_chip);
+-}
+-EXPORT_SYMBOL_GPL(bind_evtchn_to_irq_lateeoi);
+-
+ static int bind_ipi_to_irq(unsigned int ipi, unsigned int cpu)
+ {
+ 	struct evtchn_bind_ipi bind_ipi;
+diff --git a/drivers/xen/pvcalls-back.c b/drivers/xen/pvcalls-back.c
+index a7d293fa8d14..b47fd8435061 100644
+--- a/drivers/xen/pvcalls-back.c
++++ b/drivers/xen/pvcalls-back.c
+@@ -348,7 +348,7 @@ static struct sock_mapping *pvcalls_new_active_socket(
+ 	map->bytes = page;
+ 
+ 	ret = bind_interdomain_evtchn_to_irqhandler_lateeoi(
+-			fedata->dev->otherend_id, evtchn,
++			fedata->dev, evtchn,
+ 			pvcalls_back_conn_event, 0, "pvcalls-backend", map);
+ 	if (ret < 0)
+ 		goto out;
+@@ -948,7 +948,7 @@ static int backend_connect(struct xenbus_device *dev)
+ 		goto error;
+ 	}
+ 
+-	err = bind_interdomain_evtchn_to_irq_lateeoi(dev->otherend_id, evtchn);
++	err = bind_interdomain_evtchn_to_irq_lateeoi(dev, evtchn);
+ 	if (err < 0)
+ 		goto error;
+ 	fedata->irq = err;
+diff --git a/drivers/xen/xen-pciback/xenbus.c b/drivers/xen/xen-pciback/xenbus.c
+index e7c692cfb2cf..5188f02e75fb 100644
+--- a/drivers/xen/xen-pciback/xenbus.c
++++ b/drivers/xen/xen-pciback/xenbus.c
+@@ -124,7 +124,7 @@ static int xen_pcibk_do_attach(struct xen_pcibk_device *pdev, int gnt_ref,
+ 	pdev->sh_info = vaddr;
+ 
+ 	err = bind_interdomain_evtchn_to_irqhandler_lateeoi(
+-		pdev->xdev->otherend_id, remote_evtchn, xen_pcibk_handle_event,
++		pdev->xdev, remote_evtchn, xen_pcibk_handle_event,
+ 		0, DRV_NAME, pdev);
+ 	if (err < 0) {
+ 		xenbus_dev_fatal(pdev->xdev, err,
+diff --git a/drivers/xen/xen-scsiback.c b/drivers/xen/xen-scsiback.c
+index 862162dca33c..8b59897b2df9 100644
+--- a/drivers/xen/xen-scsiback.c
++++ b/drivers/xen/xen-scsiback.c
+@@ -799,7 +799,7 @@ static int scsiback_init_sring(struct vscsibk_info *info, grant_ref_t ring_ref,
+ 	sring = (struct vscsiif_sring *)area;
+ 	BACK_RING_INIT(&info->ring, sring, PAGE_SIZE);
+ 
+-	err = bind_interdomain_evtchn_to_irq_lateeoi(info->domid, evtchn);
++	err = bind_interdomain_evtchn_to_irq_lateeoi(info->dev, evtchn);
+ 	if (err < 0)
+ 		goto unmap_page;
+ 
+diff --git a/include/xen/events.h b/include/xen/events.h
+index 8ec418e30c7f..c204262d9fc2 100644
+--- a/include/xen/events.h
++++ b/include/xen/events.h
+@@ -12,10 +12,11 @@
+ #include <asm/xen/hypercall.h>
+ #include <asm/xen/events.h>
+ 
++struct xenbus_device;
++
+ unsigned xen_evtchn_nr_channels(void);
+ 
+ int bind_evtchn_to_irq(unsigned int evtchn);
+-int bind_evtchn_to_irq_lateeoi(evtchn_port_t evtchn);
+ int bind_evtchn_to_irqhandler(unsigned int evtchn,
+ 			      irq_handler_t handler,
+ 			      unsigned long irqflags, const char *devname,
+@@ -35,17 +36,17 @@ int bind_ipi_to_irqhandler(enum ipi_vector ipi,
+ 			   unsigned long irqflags,
+ 			   const char *devname,
+ 			   void *dev_id);
+-int bind_interdomain_evtchn_to_irq(unsigned int remote_domain,
++int bind_interdomain_evtchn_to_irq(struct xenbus_device *dev,
+ 				   unsigned int remote_port);
+-int bind_interdomain_evtchn_to_irq_lateeoi(unsigned int remote_domain,
++int bind_interdomain_evtchn_to_irq_lateeoi(struct xenbus_device *dev,
+ 					   evtchn_port_t remote_port);
+-int bind_interdomain_evtchn_to_irqhandler(unsigned int remote_domain,
++int bind_interdomain_evtchn_to_irqhandler(struct xenbus_device *dev,
+ 					  unsigned int remote_port,
+ 					  irq_handler_t handler,
+ 					  unsigned long irqflags,
+ 					  const char *devname,
+ 					  void *dev_id);
+-int bind_interdomain_evtchn_to_irqhandler_lateeoi(unsigned int remote_domain,
++int bind_interdomain_evtchn_to_irqhandler_lateeoi(struct xenbus_device *dev,
+ 						  evtchn_port_t remote_port,
+ 						  irq_handler_t handler,
+ 						  unsigned long irqflags,
+-- 
+2.26.2
