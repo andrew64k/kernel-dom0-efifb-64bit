@@ -22,7 +22,7 @@
 Name: kernel
 License: GPLv2
 Version: 4.19.19
-Release: 7.0.14.1%{?dist}
+Release: 7.0.14.1.0.cifspatch.1%{?dist}
 ExclusiveArch: x86_64
 ExclusiveOS: Linux
 Summary: The Linux kernel
@@ -438,6 +438,8 @@ Patch379: xsa392-linux-1.patch
 Patch380: xsa392-linux-2.patch
 Patch381: abi-version.patch
 
+Patch1000: test-cifs-patch.patch
+
 Provides: gitsha(ssh://git@code.citrite.net/XSU/linux-stable.git) = dffbba4348e9686d6bf42d54eb0f2cd1c4fb3520
 Provides: gitsha(ssh://git@code.citrite.net/XS/linux.pg.git) = 36ae6b3fc7679d819f05402b14b2fb74a31507b4
 
@@ -749,6 +751,9 @@ fi
 %{?_cov_results_package}
 
 %changelog
+* Tue Mar 29 2022 Samuel Verschelde <stormi-xcp@ylix.fr> - 4.19.19-7.0.14.1.0.cifspatch.1
+- Add test-cifs-patch.patch
+
 * Thu Jan 13 2022 Samuel Verschelde <stormi-xcp@ylix.fr> - 4.19.19-7.0.14.1
 - Security update based on XS82E036 (XSA-392)
 - Remove new Citrix Commercial COPYING file that doesn't concern us (we don't ship their logo)
